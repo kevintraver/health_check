@@ -1,8 +1,20 @@
 #!/bin/bash
 
+err_report() {
+    echo "$0: Error on line $1 - aborted"
+    exit 1
+}
+
+trap 'err_report $LINENO' ERR
+
 # Any failure causes exit
 set -e
 
+case "$1" in
+[0-9]*)
+    export BUNDLE_GEMFILE=$PWD/test/rails_$1.gemfile
+    ;;
+esac
 while :
 do
     case "$BUNDLE_GEMFILE" in
@@ -39,8 +51,8 @@ else
   $rehash
 fi
 
-echo "Running bundle --binstubs with BUNDLE_GEMFILE=$BUNDLE_GEMFILE ..."
-if ! bundle --binstubs ; then
+echo "Running bundle with BUNDLE_GEMFILE=$BUNDLE_GEMFILE ..."
+if ! bundle ; then
     echo "Test aborted (missing required gems)"
     exit 2
 fi
@@ -48,6 +60,23 @@ $rehash
 
 rails="$base_dir/test/bin/rails"
 rake="$base_dir/test/bin/rake"
+
+echo Checking $rails is present ...
+[ -f $rails -a -f $rake ] || bundle exec rake rails:update:bin || echo '(ignored rake rails:update:bin exit status)'
+[ -f $rails ] || bundle binstub railties || echo '(ignored bundle exit status)'
+[ -f $rails ] || bundle binstub rails || echo '(ignored bundle exit status)'
+if [ ! -f $rails ]; then
+    echo "Test aborted (unable to create $rails)"
+    exit 2
+fi
+
+if [ ! -f $rake ]; then
+    echo "Running bundle --binstub rake ..."
+    if ! bundle --binstub rake || [ ! -f $rake ]; then
+        echo "Test aborted (unable to create $rake)"
+        exit 2
+    fi
+fi
 
 actual_rails_version=`$rails -v`
 
@@ -82,7 +111,7 @@ case "$actual_rails_version" in
     *' '[12].*)
         $rails railsapp -d $db
         ;;
-    *' '[34].*)
+    *' '[345].*)
         case "$BUNDLE_GEMFILE" in
         *rails_edge.gemfile)
             $rails new railsapp -d $db --edge
@@ -129,6 +158,8 @@ HealthCheck.setup do |config|
 end
 !
 
+echo Setting INITIAL_BUNDLE_GEMFILE=$BUNDLE_GEMFILE
+INITIAL_BUNDLE_GEMFILE="$BUNDLE_GEMFILE"
 echo Unsetting BUNDLE_GEMFILE '(so Gemfile for rails application will be used)'
 unset BUNDLE_GEMFILE
 
@@ -146,24 +177,37 @@ then
             echo "gem '$RAILS_SERVER'" >> Gemfile
             ;;
     esac
+    egrep REQUIRED < ${INITIAL_BUNDLE_GEMFILE} >> Gemfile || echo No required gems found...
     echo
-    echo running bundle install --binstubs
-    bundle install --binstubs
-    case "$actual_rails_version" in
-    *' '4.*)
-        echo "Running rake rails:update:binstubs to fix up binstubs bundle has overwritten"
-        echo a | rake rails:update:bin
-        ;;
-    esac
+    echo ================= Gemfile ===================
+    cat Gemfile
+    echo
+    echo running bundle install
+    bundle install
     $rehash
     echo "Using binstubs in $railsapp/bin for rails and rake commands"
     rails="$railsapp/bin/rails"
     rake="$railsapp/bin/rake"
+
+    echo Checking $rails is present ...
+    [ -f $rails -a -f $rake ] || bundle exec rake rails:update:bin || echo '(ignored rake rails:update:bin exit status)'
+    [ -f $rails ] || bundle binstub railties || echo '(ignored bundle exit status)'
+    [ -f $rails ] || bundle binstub rails || echo '(ignored bundle exit status)'
+    if [ ! -f $rails ]; then
+        echo "Test aborted (unable to create $rails)"
+        exit 2
+    fi
+
+    echo Checking $rake is present ...
+    [ -f $rake ] || bundle binstub rake || echo '(ignored bundle exit status)'
+    if [ ! -f $rake ]; then
+        echo "Test aborted (unable to create $rake)"
+        exit 2
+    fi
+
+    $rehash
     # Fix for rvm, otherwise bundle run from rails create fails
     export PATH="`pwd`/bin:$PATH"
-    echo ================= Gemfile ===================
-    cat Gemfile
-    echo
     echo ================= Gemfile.lock ===================
     cat Gemfile.lock
     echo
@@ -303,7 +347,6 @@ EOF
 
 if [ -s config/routes.rb ]; then
   mv -f config/routes.rb config/routes.rb-old
-  var=`ruby -n -e 'print $1 if /^[^#]+ do \|([^\|]+)\|/' config/routes.rb-old`
   (
     ruby -n -e 'print if not /^end/..9999' config/routes.rb-old | tee /tmp/t$$
     if [ ! -s /tmp/t$$ ]; then
@@ -311,34 +354,18 @@ if [ -s config/routes.rb ]; then
       sed -e '/^end/,$d' config/routes.rb-old
     fi
 
-    case "$var" in
-    '')
-      echo "  # -----------------------------------------"
-      echo "  # START OF SECTION FOR TESTING HEALTH_CHECK"
-      echo "  get 'example(/:action(/:id))(.:format)' => 'example'"
-      echo "  if File.exists?('$catchall_file')"
-      echo "    health_check_routes"
-      echo "    # CATCH ALL ROUTE"
-      echo "    get '*path' => 'example#catchall'"
-      echo "  end"
-      echo "  # END OF SECTION FOR TESTING HEALTH_CHECK"
-      echo "  # ---------------------------------------"
-      ;;
-    *)
-      echo "  # -----------------------------------------"
-      echo "  # START OF SECTION FOR TESTING HEALTH_CHECK"
-      echo "  # example controller"
-      echo "  ${var}.connect 'example(/:action(/:id))(.:format)', :controller => 'example'"
-      echo "  if File.exists?('$catchall_file')"
-      echo "    # health_check routes already at the top in rails 2.3! do not need to call health_check_routes"
-      echo "    # CATCH ALL ROUTE"
-      echo "    ${var}.connect '*path', :controller => 'example', :action => 'catchall'"
-      echo "  end"
-      echo "  # END OF SECTION FOR TESTING HEALTH_CHECK"
-      echo "  # ---------------------------------------"
-      ;;
-    esac
-    ruby -n -e 'print if /^end/..9999' config/routes.rb-old | tee /tmp/t$$ 
+    # rails 3.0+
+    echo "  # -----------------------------------------"
+    echo "  # START OF SECTION FOR TESTING HEALTH_CHECK"
+    echo "  get 'example(/:action(/:id))(.:format)' => 'example'"
+    echo "  if File.exists?('$catchall_file')"
+    echo "    health_check_routes"
+    echo "    # CATCH ALL ROUTE"
+    echo "    get '*path', :to => 'example#catchall'"
+    echo "  end"
+    echo "  # END OF SECTION FOR TESTING HEALTH_CHECK"
+    echo "  # ---------------------------------------"
+    ruby -n -e 'print if /^end/..9999' config/routes.rb-old | tee /tmp/t$$
     if [ ! -s /tmp/t$$ ]; then
       echo "WARNING: ruby -n -e failed silently - using sed instead!! (rbx-19mode has that problem)" >&3
       sed -n -e '/^end/,$p' config/routes.rb-old

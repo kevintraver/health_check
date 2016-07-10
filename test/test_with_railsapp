@@ -1,28 +1,43 @@
 #!/bin/bash
 
+err_report() {
+    echo "$0: Error on line $1 - aborted"
+    exit 1
+}
+
+trap 'err_report $LINENO' ERR
+
 # Any failure causes exit
 set -e
+export DISABLE_SPRING=1
 
-case "$1" in
-redo)
-    . test/init_variables
-    cd $railsapp
+cleanup_db()
+{
     echo Dropping database ...
-    $rake db:drop 
+    $rake db:drop
     echo Removing migrations ...
     rm -f db/migrate/* db/schema.rb
     case `ruby -e 'puts JRUBY_VERSION' 2> /dev/null` in
 	[0-9]*)
         echo 'Jruby requires the database to be created before the server is started: running rake db:migrate'
-        $rake db:migrate 
+        $rake db:migrate
 	;;
     esac
+}
+
+case "$1" in
+redo)
+    . test/init_variables
+    cd $railsapp
+    cleanup_db
     actual_rails_version=`$rails -v`
     ;;
 *)
-    . test/setup_railsapp
+    . test/setup_railsapp $1
     ;;
 esac
+
+run_test=$2
 
 cd $railsapp
 date > $custom_file
@@ -64,6 +79,7 @@ start_server()
         bundle_prefix='bundle exec'
     fi
     server_arg=${RAILS_SERVER:-webrick}
+    echo "start_server called using: `env | egrep '^RAILS|^RACK|^PATH='` $bundle_prefix $server_arg"
     case "$server_arg" in
     puma) 
         $bundle_prefix puma -b tcp://127.0.0.1:$port &
@@ -89,6 +105,7 @@ start_server()
         ;;
     esac
     server_pid=$!
+    echo Server pid: $server_pid
     sleep 3
     echo
     echo 'Checking server is up ...'
@@ -113,6 +130,7 @@ stop_server()
             echo ========================================================
             echo "Killing rails server [pid: $server_pid]"
             kill -1 $server_pid  || true
+            [ ! -x bin/spring ] || bin/spring stop || true
             sleep 2
             kill -9 $server_pid  || true
             ;;
@@ -161,189 +179,295 @@ trap "finish FAILED 1" 0
 common_tests()
 {
 
-    echo 'CHECKING routes exist...'
-    $rake routes | tee /tmp/t$$
-    echo
-    case `egrep ${route_prefix} /tmp/t$$ || true` in
-    '')
-      echo WARNING - routes for ${route_prefix} not listed!
-      ;;
-    esac
+    test_no=$1
 
-    echo
-    echo 'TESTING can get a static file ...'
-    $testurl ${host}/static.txt 200 text/plain STATIC-FILE
-    echo
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: CHECKING routes exist..."
+        $rake routes | tee /tmp/t$$
+        echo
+        case `egrep ${route_prefix} /tmp/t$$ || true` in
+        '')
+          echo WARNING - routes for ${route_prefix} not listed!
+          ;;
+        esac
+        echo
+    fi
 
-    echo
-    echo 'TESTING can get an example controller ...'
-    $testurl ${host}/example 200 text/html 'example page'
-    echo
-
-    echo
-    echo 'TESTING direct call to catchall method on example controller ...'
-    $testurl ${host}/example/catchall 200 text/html 'catch all route'
-    echo
-
-    echo 'TESTING ${route_prefix}/migration should pass with no database migrations ...'
-    ls db/migrate
-    $testurl ${host}/${route_prefix}/migration 200 text/plain $success
-    echo
-
-    echo 'TESTING ${route_prefix}/migration should fail without initial database migration ...'
-    cp $base_dir/test/migrate/nine/* db/migrate
-    ls db/migrate
-    $testurl ${host}/${route_prefix}/migration 550 text/plain failed
-    echo
-
-    echo 'TESTING ${route_prefix}/database should pass without initial database migration (since it ignores the difference) ...'
-    $testurl ${host}/${route_prefix}/database 200 text/plain $success
-    echo
-
-    echo 'TESTING ${route_prefix}/site should pass ...'
-    $testurl ${host}/${route_prefix}/site 200 text/plain $success
-    echo
-
-    echo 'TESTING ${route_prefix}/migration should pass after initial database migration ...'
-    $rake db:migrate 
-    $testurl ${host}/${route_prefix}/migration 200 text/plain $success
-    echo
-
-    echo 'TESTING ${route_prefix}/migration should fail without all migrations ...'
-    cp $base_dir/test/migrate/twelve/* db/migrate
-
-    case "$actual_rails_version" in
-        *' '[12].*|*' '3.[01]*)
-            echo removing db/migrate/*.*.rb "($actual_rails_version does not support extra dots in migration names)"
-            rm -f db/migrate/*.*.rb
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING can get a static file ..."
+        case "$RAILS_ENV=`egrep '^\s*config.serve_static_[asetfil]* *= *false' config/environments/${RAILS_ENV}.rb`" in
+        production*static*false*)
+            echo "  SKIPPED (disabled in production)"
             ;;
-    esac
-    ls db/migrate
-    $testurl ${host}/${route_prefix}/migration 550 text/plain failed
-    echo
+        *)
+            grep serve_static_files config/environments/${RAILS_ENV}.rb config/[a-z]*.rb || echo no serve_static_files entry
+            $testurl ${host}/static.txt 200 text/plain STATIC-FILE
+            ;;
+        esac
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/migration should pass after both database migrations ...'
-    $rake db:migrate 
-    $testurl ${host}/${route_prefix}/migration 200 text/plain $success
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING can get an example controller ..."
+        $testurl ${host}/example 200 text/html 'example page'
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/migration should pass after both database migrations ...'
-    $rake db:migrate 
-    $testurl ${host}/${route_prefix}/migration 200 text/plain $success
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING direct call to catchall method on example controller ..."
+        $testurl ${host}/example/catchall 200 text/html 'catch all route'
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/email should fail without smtp available ...'
-    $testurl ${host}/${route_prefix}/email 550 text/plain failed
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/migration should pass with no database migrations ..."
+        ls db/migrate
+        $testurl ${host}/${route_prefix}/migration 200 text/plain $success
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/email should pass with smtp available ...'
-    $fake_smtp_server &
-    fake_smtp_pid=$!
-    sleep 5
-    $testurl ${host}/${route_prefix}/email 200 text/plain $success
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/migration should fail without initial database migration ..."
+        cp $base_dir/test/migrate/nine/* db/migrate
+        ls db/migrate
+        $testurl ${host}/${route_prefix}/migration 550 text/plain failed
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix} (all) should fail without smtp available ...'
-    $testurl ${host}/${route_prefix} 550 text/plain failed
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/database should pass without initial database migration (since it ignores the difference) ..."
+        $testurl ${host}/${route_prefix}/database 200 text/plain $success
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/all should fail without smtp available ...'
-    $testurl ${host}/${route_prefix} 550 text/plain failed
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/site should pass ..."
+        $testurl ${host}/${route_prefix}/site 200 text/plain $success
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/migration should pass after initial database migration ..."
+        $rake db:migrate
+        $testurl ${host}/${route_prefix}/migration 200 text/plain $success
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/migration should fail without all migrations ..."
+        cp $base_dir/test/migrate/twelve/* db/migrate
+
+        case "$actual_rails_version" in
+            *' '[12].*|*' '3.[01]*)
+                echo removing db/migrate/*.*.rb "($actual_rails_version does not support extra dots in migration names)"
+                rm -f db/migrate/*.*.rb
+                ;;
+        esac
+        ls db/migrate
+        $testurl ${host}/${route_prefix}/migration 550 text/plain failed
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/migration should pass after both database migrations ..."
+        $rake db:migrate
+        $testurl ${host}/${route_prefix}/migration 200 text/plain $success
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/migration should pass after both database migrations ..."
+        $rake db:migrate
+        $testurl ${host}/${route_prefix}/migration 200 text/plain $success
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/email should fail without smtp available ..."
+        $testurl ${host}/${route_prefix}/email 550 text/plain failed
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/email should pass with smtp available ..."
+        $fake_smtp_server &
+        fake_smtp_pid=$!
+        sleep 5
+        $testurl ${host}/${route_prefix}/email 200 text/plain $success
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix} (all) should fail without smtp available ..."
+        $testurl ${host}/${route_prefix} 550 text/plain failed
+        echo
+    fi
+
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/all should fail without smtp available ..."
+        $testurl ${host}/${route_prefix} 550 text/plain failed
+        echo
+    fi
 
     kill -9 $fake_smtp_pid || echo fake_smtp_server had finished as expected
-    echo 'TESTING ${route_prefix} (all) should pass with smtp available ...'
-    $fake_smtp_server &
-    fake_smtp_pid=$!
-    sleep 5
-    $testurl ${host}/${route_prefix} 200 text/plain $success
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix} (all) should pass with smtp available ..."
+        $fake_smtp_server &
+        fake_smtp_pid=$!
+        sleep 5
+        $testurl ${host}/${route_prefix} 200 text/plain $success
+        echo
+    fi
 
     kill -9 $fake_smtp_pid || echo fake_smtp_server had finished as expected
-    echo 'TESTING ${route_prefix}/all should pass with smtp available ...'
-    $fake_smtp_server &
-    fake_smtp_pid=$!
-    sleep 5
-    $testurl ${host}/${route_prefix}/all 200 text/plain $success
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/all should pass with smtp available ..."
+        $fake_smtp_server &
+        fake_smtp_pid=$!
+        sleep 5
+        $testurl ${host}/${route_prefix}/all 200 text/plain $success
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/custom should pass ...'
-    $testurl ${host}/${route_prefix}/custom 200 text/plain $success
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/custom should pass ..."
+        $testurl ${host}/${route_prefix}/custom 200 text/plain $success
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/custom.html should pass (returning plain text) ...'
-    $testurl ${host}/${route_prefix}/custom.html 200 text/plain $success
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/custom.html should pass (returning plain text) ..."
+        $testurl ${host}/${route_prefix}/custom.html 200 text/plain $success
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/custom.json should pass ...'
-    $testurl ${host}/${route_prefix}/custom.json 200 application/json '"healthy":true'
-    $testurl ${host}/${route_prefix}/custom.json 200 application/json "\"message\":\"$success\""
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/custom.json should pass ..."
+        $testurl ${host}/${route_prefix}/custom.json 200 application/json '"healthy":true'
+        $testurl ${host}/${route_prefix}/custom.json 200 application/json "\"message\":\"$success\""
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/custom.xml should pass ...'
-    $testurl ${host}/${route_prefix}/custom.xml 200 application/xml '<healthy type="boolean">true</healthy>'
-    $testurl ${host}/${route_prefix}/custom.xml 200 application/xml "<message>$success</message>"
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/custom.xml should pass ..."
+        $testurl ${host}/${route_prefix}/custom.xml 200 application/xml '<healthy type="boolean">true</healthy>'
+        $testurl ${host}/${route_prefix}/custom.xml 200 application/xml "<message>$success</message>"
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}/custom should fail when custom returns string ...'
+    test_no=`expr 1 + $test_no`
     rm -f $custom_file
-    $testurl ${host}/${route_prefix}/custom 550 text/plain failed
-    echo
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}/custom should fail when custom returns string ..."
+        $testurl ${host}/${route_prefix}/custom 550 text/plain failed
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix} (all) should fail when custom check fails ...'
-    $testurl ${host}/${route_prefix} 550 text/plain "$custom_file is missing!"
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix} (all) should fail when custom check fails ..."
+        $testurl ${host}/${route_prefix} 550 text/plain "$custom_file is missing!"
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}.json (all) should fail when custom check fails ...'
-    $testurl ${host}/${route_prefix}.json 555 application/json '"healthy":false'
-    $testurl ${host}/${route_prefix}.json 555 application/json "$custom_file is missing!"
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}.json (all) should fail when custom check fails ..."
+        $testurl ${host}/${route_prefix}.json 555 application/json '"healthy":false'
+        $testurl ${host}/${route_prefix}.json 555 application/json "$custom_file is missing!"
+        echo
+    fi
 
-    echo 'TESTING ${route_prefix}.xml (all) should fail when custom check fails ...'
-    $testurl ${host}/${route_prefix}.xml 555 application/xml '<healthy type="boolean">false</healthy>'
-    echo
+    test_no=`expr 1 + $test_no`
+    if [ -z "$run_test" ] || [ $test_no == "$run_test" ]; then
+        echo "${test_no}: TESTING ${route_prefix}.xml (all) should fail when custom check fails ..."
+        $testurl ${host}/${route_prefix}.xml 555 application/xml '<healthy type="boolean">false</healthy>'
+        echo
+    fi
 
     date > $custom_file
+
 }
 
 
 # required for rails 4.1+ in production mode
 export SECRET_KEY_BASE=cf2f49c38a3fe67416ddf680f4f3187c0fce7dd1b9b117b34d195df75b274e08a04877e23803b2fdf1aa9a655269d94bc4888aa325cf7e721cc47368cfe56a80
 
-echo ========================================================
-echo TESTING WITHOUT CATCHALL in test env
-echo ========================================================
-export RAILS_ENV=test RACK_ENV=test
+# required for rails 5 to server static files
+export RAILS_SERVE_STATIC_FILES=on
 
-start_server
+case "$run_test" in
+???)
+    ;;
+*)
+    echo ========================================================
+    echo TESTING WITHOUT CATCHALL in test env
+    echo ========================================================
+    export RAILS_ENV=test RACK_ENV=test
 
-# get a static file
+    start_server
 
-echo
-echo 'TESTING no catchall route active ...'
-expected_status=404,500,502
-$testurl ${host}/another/url $expected_status
+    # get a static file
 
-route_prefix=health_check
+    route_prefix=health_check
 
-common_tests
+    echo
+    echo 'TESTING no catchall route active ...'
+    expected_status=404,500,502
+    $testurl ${host}/another/url $expected_status
 
-echo ========================================================
-echo TESTING WITH CATCHALL in ${RAILS_ENV2:-production} env
-echo ========================================================
-export RAILS_ENV=${RAILS_ENV2:-production} RACK_ENV=${RAILS_ENV2:-production}
+    common_tests 1
+    ;;
+esac
 
-date > $catchall_file
 
-stop_server
-start_server
+case "$run_test" in
+''|???)
+    echo ========================================================
+    echo TESTING WITH CATCHALL in ${RAILS_ENV2:-production} env
+    echo ========================================================
+    export RAILS_ENV=${RAILS_ENV2:-production} RACK_ENV=${RAILS_ENV2:-production}
 
-echo
-echo 'TESTING catchall route active ...'
-$testurl ${host}/another/url 200 text/html 'catch all route'
-echo
+    case "$run_trest" in
+     '')
+        stop_server
+        cleanup_db
+        ;;
+    esac
 
-common_tests
+    date > $catchall_file
+
+    start_server
+
+    echo
+    echo 'TESTING catchall route active ...'
+    $testurl ${host}/another/url 200 text/html 'catch all route'
+    echo
+
+    common_tests 101
+    ;;
+esac
 
 rm -f $catchall_file
 

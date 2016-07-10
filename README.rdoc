@@ -3,6 +3,7 @@
 Simple health check of Rails 4.x+ apps for use with Pingdom, NewRelic, EngineYard or uptime.openacs.org etc.
 
 Use {pre_rails4}[https://github.com/ianheggie/health_check/tree/pre_rails4] branch  / versions < 1.6 with Rails 2.3 and 3.x 
+Use {master}[https://github.com/ianheggie/health_check/tree/master] branch or gem versions ~> 2.0 for Rails 4.x and 5.x;
 
 The basic goal is to quickly check that rails is up and running and that it has access to correctly configured resources (database, email gateway)
 
@@ -83,8 +84,11 @@ To change the configuration of health_check, create a file `config/initializers/
 
       config.http_status_for_error_object = 500
 
-      # You can customize which checks happen on a standard health check
+      # You can customize which checks happen on a standard health check, eg to set an explicit list use:
       config.standard_checks = [ 'database', 'migrations', 'custom' ]
+
+      # Or to exclude one check:
+      config.standard_checks -= [ 'emailconf' ]
 
       # You can set what tests are run with the 'full' or 'all' parameter
       config.full_checks = ['database', 'migrations', 'custom', 'email', 'cache']
@@ -98,8 +102,11 @@ To change the configuration of health_check, create a file `config/initializers/
 
 You may call add_custom_check multiple times with different tests. These tests will be included in the default list ("standard").
 
-If you have a catchall route in a rails 3.0 or later application then add the following line above the catch all route (in `config/routes.rb`):
+If you have a catchall route then add the following line above the catch all route (in `config/routes.rb`):
    health_check_routes
+
+To change the url prefix (eg to /ping), add the following line in `config/routes.rb`:
+   health_check_routes('ping')
 
 == Uptime Monitoring
 
@@ -151,6 +158,16 @@ Will return a result with Content-Type: application/xml and body like:
   </hash>
 
 See https://github.com/ianheggie/health_check/wiki/Ajax-Example for an Ajax example
+
+== Silencing log output
+
+It is recomended that you use silencer, lograge or one of the other log filtering gems.
+
+For example, with lograge use the following to exclude health_check from being logged:
+
+    config.lograge.ignore_actions = ["health_check/health_check#index"]
+
+Likewise you will probably want to exclude health_check from monitoring systems like newrelic.
 
 == Note on Patches/Pull Requests
 

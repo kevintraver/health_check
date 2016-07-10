@@ -3,10 +3,8 @@
 
 module HealthCheck
 
-  if Rails.version >= '3.0'
-    class Engine < Rails::Engine
-      cattr_accessor :routes_manually_defined
-    end
+  class Engine < Rails::Engine
+    cattr_accessor :routes_already_defined
   end
 
   # Text output upon success
@@ -31,12 +29,12 @@ module HealthCheck
   mattr_accessor :standard_checks
   self.custom_checks = [ ]
   self.full_checks = ['database', 'migrations', 'custom', 'email', 'cache']
-  self.standard_checks = [ 'database', 'migrations', 'custom' ]
+  self.standard_checks = [ 'database', 'migrations', 'custom', 'emailconf' ]
 
   def self.add_custom_check(&block)
     custom_checks << block
   end
-  
+
   def self.setup
     yield self
   end
@@ -46,11 +44,6 @@ end
 require "health_check/version"
 require 'health_check/utils'
 require 'health_check/health_check_controller'
-
-if defined?(HealthCheck::Engine)
-  require 'health_check/health_check_routes'
-else
-  require 'health_check/add_23_routes'
-end
+require 'health_check/health_check_routes'
 
 # vi: sw=2 sm ai:
