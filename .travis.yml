@@ -88,11 +88,14 @@ matrix:
     
     - rvm: 1.9.3
       gemfile: test/rails_4.0.gemfile
+      env: RAILS_VERSION=4.1
 
-    - rvm: rbx-2.2.6
+    - rvm: 2.1.2
+      gemfile: test/rails_4.1.gemfile
+      env: RAILS_VERSION=4.1
+
+    # rails 4.0
+    
+    - rvm: 1.9.3
       gemfile: test/rails_4.0.gemfile
-      env: RAILS_ENV2=development
-
-    - rvm: 2.0.0
-      gemfile: test/rails_4.0.gemfile
-
+      env: RAILS_VERSION=4.0
